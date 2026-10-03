@@ -1,0 +1,259 @@
+{
+  "name": "04 - Outbound ERPNext Agent Chat Translation to WhatsApp",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "erpnext-outbound",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "webhook-erp-outbound",
+      "name": "ERPNext Outbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        340
+      ],
+      "webhookId": "erpnext-outbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\n// We only process outbound communications on Leads\nif (body.reference_doctype !== 'Lead') {\n  return [];\n}\n\n// Ensure message was sent by an agent/system, not incoming\nif (body.sent_or_received !== 'Sent') {\n  return [];\n}\n\n// Extract raw text from HTML content\nlet content = body.content || '';\ncontent = content.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').trim();\n\nif (!content) {\n  return [];\n}\n\nreturn [{\n  json: {\n    leadId: body.reference_name,\n    agentMessage: content,\n    communicationId: body.name || body.id\n  }\n}];"
+      },
+      "id": "code-filter-outbound",
+      "name": "Sanitize Agent Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.ERPNEXT_URL || 'http://erpnext.local') + '/api/resource/Lead/' + $json.leadId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "http-get-lead-profile",
+      "name": "Fetch Lead Preferences",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-tamil-lead",
+              "leftValue": "={{ $json.data.custom_preferred_language }}",
+              "rightValue": "Tamil",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-lead-tamil",
+      "name": "Preferred Lang is Tamil?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://translation.googleapis.com/language/translate/v2",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.GCP_TRANSLATION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"q\": \"{{ $('Sanitize Agent Message').item.json.agentMessage }}\",\n  \"source\": \"en\",\n  \"target\": \"ta\",\n  \"format\": \"text\"\n}",
+        "options": {}
+      },
+      "id": "http-translate-en-to-ta",
+      "name": "Translate English to Tamil",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        240
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const agentMessage = $('Sanitize Agent Message').item.json.agentMessage;\nlet finalMessage = '';\n\nif ($input.first().json && $input.first().json.data && $input.first().json.data.translations) {\n  finalMessage = $input.first().json.data.translations[0].translatedText;\n} else {\n  // Test fallback if GCP key not provided\n  finalMessage = agentMessage;\n}\n\nreturn [{\n  json: {\n    targetPhone: $('Fetch Lead Preferences').item.json.data.mobile_no,\n    textToSend: finalMessage\n  }\n}];"
+      },
+      "id": "code-prep-tamil-send",
+      "name": "Prepare Tamil Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    targetPhone: $('Fetch Lead Preferences').item.json.data.mobile_no,\n    textToSend: $('Sanitize Agent Message').item.json.agentMessage\n  }\n}];"
+      },
+      "id": "code-prep-english-send",
+      "name": "Prepare English Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.targetPhone }}\",\n  \"text\": \"{{ $json.textToSend }}\"\n}",
+        "options": {}
+      },
+      "id": "http-send-agent-reply-wa",
+      "name": "Send Reply via Evolution API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1660,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "ERPNext Outbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "Sanitize Agent Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Agent Message": {
+      "main": [
+        [
+          {
+            "node": "Fetch Lead Preferences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Lead Preferences": {
+      "main": [
+        [
+          {
+            "node": "Preferred Lang is Tamil?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preferred Lang is Tamil?": {
+      "main": [
+        [
+          {
+            "node": "Translate English to Tamil",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare English Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Translate English to Tamil": {
+      "main": [
+        [
+          {
+            "node": "Prepare Tamil Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Tamil Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Send Reply via Evolution API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare English Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Send Reply via Evolution API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

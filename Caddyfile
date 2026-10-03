@@ -1,0 +1,24 @@
+{
+    email {$ACME_EMAIL}
+}
+
+# Evolution API v2 (API Gateway & Webhook target)
+{$WA_GATEWAY_DOMAIN} {
+    reverse_proxy evolution_api:8080 {
+        # Enable streaming for Server-Sent Events (SSE) and webhook logs
+        flush_interval -1
+    }
+}
+
+# Evolution Manager v2 (Web Dashboard for QR code scanning & instance control)
+{$WA_MANAGER_DOMAIN} {
+    reverse_proxy evolution_manager:80
+}
+
+# n8n Automation Orchestrator (Workflow Editor & Webhook Receiver)
+{$N8N_DOMAIN} {
+    reverse_proxy n8n:5678 {
+        # Keep WebSocket connections open for real-time workflow canvas updates
+        flush_interval -1
+    }
+}

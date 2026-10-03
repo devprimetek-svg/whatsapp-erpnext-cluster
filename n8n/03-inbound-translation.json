@@ -1,0 +1,272 @@
+{
+  "name": "03 - Inbound WhatsApp Translation to ERPNext Communication",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-inbound-chat",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "evo-webhook-chat",
+      "name": "Evolution Chat Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        340
+      ],
+      "webhookId": "evolution-inbound-chat"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json;\nconst data = payload.data || payload;\n\nif (!data || !data.key) {\n  return [];\n}\n\n// 1. Discard bot's outbound messages\nif (data.key.fromMe === true) {\n  return [];\n}\n\n// 2. Discard WhatsApp groups\nconst remoteJid = data.key.remoteJid || '';\nif (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast')) {\n  return [];\n}\n\n// 3. Extract clean phone\nconst cleanPhone = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');\n\n// 4. Extract message text\nconst messageObj = data.message || {};\nlet messageText = '';\nif (messageObj.conversation) {\n  messageText = messageObj.conversation;\n} else if (messageObj.extendedTextMessage && messageObj.extendedTextMessage.text) {\n  messageText = messageObj.extendedTextMessage.text;\n}\n\nmessageText = (messageText || '').trim();\nif (!messageText) {\n  return [];\n}\n\n// 5. Detect Tamil script via Unicode range U+0B80 - U+0BFF\nconst isTamil = /[\\u0B80-\\u0BFF]/.test(messageText);\n\nreturn [{\n  json: {\n    clean_phone: cleanPhone,\n    remoteJid: remoteJid,\n    senderName: data.pushName || 'WhatsApp Customer',\n    originalText: messageText,\n    isTamil: isTamil,\n    messageId: data.key.id\n  }\n}];"
+      },
+      "id": "code-detect-tamil",
+      "name": "Detect Tamil Characters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "tamil-check",
+              "leftValue": "={{ $json.isTamil }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-tamil",
+      "name": "Is Tamil?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        620,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://translation.googleapis.com/language/translate/v2",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.GCP_TRANSLATION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"q\": \"{{ $json.originalText }}\",\n  \"source\": \"ta\",\n  \"target\": \"en\",\n  \"format\": \"text\"\n}",
+        "options": {}
+      },
+      "id": "http-gcp-translate-inbound",
+      "name": "GCP Translate Tamil to English",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        860,
+        240
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const originalText = $('Detect Tamil Characters').item.json.originalText;\nlet englishText = '';\n\n// Check if GCP Translate responded successfully\nif ($input.first().json && $input.first().json.data && $input.first().json.data.translations) {\n  englishText = $input.first().json.data.translations[0].translatedText;\n} else {\n  // Graceful fallback for test/dev mode if GCP key not provided\n  englishText = `[AI Translation]: ${originalText}`;\n}\n\nconst formattedContent = `[Original Tamil]:\\n${originalText}\\n\\n[AI English Translation]:\\n${englishText}`;\n\nreturn [{\n  json: {\n    clean_phone: $('Detect Tamil Characters').item.json.clean_phone,\n    senderName: $('Detect Tamil Characters').item.json.senderName,\n    formattedContent: formattedContent,\n    originalText: originalText,\n    englishText: englishText\n  }\n}];"
+      },
+      "id": "code-format-tamil-content",
+      "name": "Format Tamil + English Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const originalText = $('Detect Tamil Characters').item.json.originalText;\nconst formattedContent = `[English Message]:\\n${originalText}`;\n\nreturn [{\n  json: {\n    clean_phone: $('Detect Tamil Characters').item.json.clean_phone,\n    senderName: $('Detect Tamil Characters').item.json.senderName,\n    formattedContent: formattedContent,\n    originalText: originalText,\n    englishText: originalText\n  }\n}];"
+      },
+      "id": "code-format-english-content",
+      "name": "Format English Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "=[[\"mobile_no\",\"like\",\"%\" + $json.clean_phone + \"%\"]]"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\",\"lead_name\",\"mobile_no\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-get-lead-id",
+      "name": "Lookup Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Communication",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"communication_type\": \"Communication\",\n  \"communication_medium\": \"WhatsApp\",\n  \"sent_or_received\": \"Received\",\n  \"reference_doctype\": \"Lead\",\n  \"reference_name\": \"{{ $json.data && $json.data[0] ? $json.data[0].name : '' }}\",\n  \"subject\": \"WhatsApp Message from {{ $('Detect Tamil Characters').item.json.clean_phone }}\",\n  \"content\": \"{{ ($('Format Tamil + English Content').isExecuted ? $('Format Tamil + English Content').item.json.formattedContent : $('Format English Content').item.json.formattedContent).replace(/\\n/g, '<br/>') }}\",\n  \"sender\": \"{{ $('Detect Tamil Characters').item.json.clean_phone }}@c.us\",\n  \"sender_full_name\": \"{{ $('Detect Tamil Characters').item.json.senderName }}\"\n}",
+        "options": {}
+      },
+      "id": "http-create-erp-comm",
+      "name": "Create ERPNext Communication",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Evolution Chat Webhook": {
+      "main": [
+        [
+          {
+            "node": "Detect Tamil Characters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Tamil Characters": {
+      "main": [
+        [
+          {
+            "node": "Is Tamil?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Tamil?": {
+      "main": [
+        [
+          {
+            "node": "GCP Translate Tamil to English",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format English Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GCP Translate Tamil to English": {
+      "main": [
+        [
+          {
+            "node": "Format Tamil + English Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Tamil + English Content": {
+      "main": [
+        [
+          {
+            "node": "Lookup Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format English Content": {
+      "main": [
+        [
+          {
+            "node": "Lookup Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Create ERPNext Communication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

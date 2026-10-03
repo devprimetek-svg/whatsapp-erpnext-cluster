@@ -1,0 +1,269 @@
+{
+  "name": "01 - Meta Cloud API Inbound to ERPNext Lead (Future Ready)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meta-wa-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "meta-webhook-post",
+      "name": "Meta WA Webhook (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        340
+      ],
+      "webhookId": "meta-wa-webhook"
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "meta-wa-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "meta-webhook-get",
+      "name": "Meta Webhook Verification (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        140
+      ],
+      "webhookId": "meta-wa-verify"
+    },
+    {
+      "parameters": {
+        "jsCode": "const query = $input.first().json.query || {};\nconst mode = query['hub.mode'];\nconst token = query['hub.verify_token'];\nconst challenge = query['hub.challenge'];\n\nconst EXPECTED_TOKEN = $env.META_WEBHOOK_VERIFY_TOKEN || 'my_secure_meta_token_123';\n\nif (mode === 'subscribe' && token === EXPECTED_TOKEN) {\n  return [{\n    json: {\n      challenge: challenge,\n      status: 200\n    }\n  }];\n} else {\n  return [{\n    json: {\n      error: 'Forbidden verification token',\n      status: 403\n    }\n  }];\n}"
+      },
+      "id": "code-meta-verify",
+      "name": "Verify Meta Handshake",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.challenge }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      },
+      "id": "respond-meta-handshake",
+      "name": "Respond Handshake",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        680,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\": \"EVENT_RECEIVED\"}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-meta-ack",
+      "name": "Ack Meta Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nif (!body.entry || !body.entry[0] || !body.entry[0].changes || !body.entry[0].changes[0]) {\n  return [];\n}\n\nconst value = body.entry[0].changes[0].value;\nif (!value.messages || !value.messages[0]) {\n  return [];\n}\n\nconst msg = value.messages[0];\nconst contact = (value.contacts && value.contacts[0]) || {};\nconst profileName = (contact.profile && contact.profile.name) || 'WhatsApp Customer';\n\nlet messageText = '';\nif (msg.type === 'text') {\n  messageText = msg.text.body;\n} else if (msg.type === 'interactive') {\n  if (msg.interactive.type === 'button_reply') {\n    messageText = msg.interactive.button_reply.id || msg.interactive.button_reply.title;\n  } else if (msg.interactive.type === 'list_reply') {\n    messageText = msg.interactive.list_reply.id || msg.interactive.list_reply.title;\n  }\n}\n\nreturn [{\n  json: {\n    clean_phone: msg.from,\n    pushName: profileName,\n    messageText: messageText,\n    messageId: msg.id,\n    timestamp: msg.timestamp\n  }\n}];"
+      },
+      "id": "code-extract-meta",
+      "name": "Extract Meta Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "=[[\"mobile_no\",\"like\",\"%\" + $json.clean_phone + \"%\"]]"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\",\"lead_name\",\"mobile_no\",\"custom_preferred_language\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-search-lead-meta",
+      "name": "Search Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "meta-lead-check",
+              "leftValue": "={{ $json.data && $json.data.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-lead-exists-meta",
+      "name": "Lead Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_name\": \"{{ $('Extract Meta Message').item.json.pushName }}\",\n  \"mobile_no\": \"{{ $('Extract Meta Message').item.json.clean_phone }}\",\n  \"source\": \"WhatsApp\",\n  \"custom_preferred_language\": \"Not Set\"\n}",
+        "options": {}
+      },
+      "id": "http-create-lead-meta",
+      "name": "Create Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        420
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Meta WA Webhook (POST)": {
+      "main": [
+        [
+          {
+            "node": "Extract Meta Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ack Meta Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Meta Webhook Verification (GET)": {
+      "main": [
+        [
+          {
+            "node": "Verify Meta Handshake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Meta Handshake": {
+      "main": [
+        [
+          {
+            "node": "Respond Handshake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Meta Message": {
+      "main": [
+        [
+          {
+            "node": "Search Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Lead Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Exists?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Create Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

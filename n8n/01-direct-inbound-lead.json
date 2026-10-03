@@ -1,0 +1,352 @@
+{
+  "name": "01 - Direct WhatsApp Inbound to ERPNext Lead",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-inbound",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "webhook-evolution",
+      "name": "Evolution API Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        340
+      ],
+      "webhookId": "evolution-inbound"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Extract payload from Evolution API webhook\nconst payload = $input.first().json;\n\n// We only process incoming message events ('messages.upsert')\nconst event = payload.event || payload.type;\nconst data = payload.data || payload;\n\nif (!data || !data.key) {\n  return [];\n}\n\n// 2. Filter out messages sent by the bot itself (prevents infinite loops)\nif (data.key.fromMe === true) {\n  return [];\n}\n\n// 3. Filter out group chats (only process direct 1-to-1 customer messages)\nconst remoteJid = data.key.remoteJid || '';\nif (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast')) {\n  return [];\n}\n\n// 4. Extract clean phone number without WhatsApp suffixes\nconst cleanPhone = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');\nif (!cleanPhone) {\n  return [];\n}\n\n// 5. Extract message text across different Baileys message types\nconst messageObj = data.message || {};\nlet messageText = '';\n\nif (messageObj.conversation) {\n  messageText = messageObj.conversation;\n} else if (messageObj.extendedTextMessage && messageObj.extendedTextMessage.text) {\n  messageText = messageObj.extendedTextMessage.text;\n} else if (messageObj.buttonsResponseMessage && messageObj.buttonsResponseMessage.selectedButtonId) {\n  messageText = messageObj.buttonsResponseMessage.selectedButtonId;\n} else if (messageObj.listResponseMessage && messageObj.listResponseMessage.singleSelectReply) {\n  messageText = messageObj.listResponseMessage.singleSelectReply.selectedRowId;\n}\n\nmessageText = (messageText || '').trim();\nconst pushName = data.pushName || 'WhatsApp Customer';\nconst instance = payload.instance || $env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary';\n\nreturn [{\n  json: {\n    clean_phone: cleanPhone,\n    remoteJid: remoteJid,\n    pushName: pushName,\n    messageText: messageText,\n    instance: instance,\n    timestamp: data.messageTimestamp || Math.floor(Date.now() / 1000)\n  }\n}];"
+      },
+      "id": "code-sanitize",
+      "name": "Filter & Sanitize Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "=[[\"mobile_no\",\"like\",\"%\" + $json.clean_phone + \"%\"]]"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\",\"lead_name\",\"mobile_no\",\"custom_preferred_language\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-search-lead",
+      "name": "Search Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "lead-exists-check",
+              "leftValue": "={{ $json.data && $json.data.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-lead-exists",
+      "name": "Lead Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        940,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_name\": \"{{ $('Filter & Sanitize Payload').item.json.pushName }}\",\n  \"mobile_no\": \"{{ $('Filter & Sanitize Payload').item.json.clean_phone }}\",\n  \"source\": \"WhatsApp\",\n  \"custom_preferred_language\": \"Not Set\"\n}",
+        "options": {}
+      },
+      "id": "http-create-lead",
+      "name": "Create New Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Filter & Sanitize Payload').item.json.clean_phone }}\",\n  \"text\": \"Welcome to Support! 👋\\nPlease select your preferred language:\\n\\n1️⃣ Reply *1* for English\\n2️⃣ தமிழ் மொழிக்கு *2* என பதிலளிக்கவும்\"\n}",
+        "options": {}
+      },
+      "id": "http-send-language-prompt",
+      "name": "Send Language Menu (Evolution)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = ($('Filter & Sanitize Payload').item.json.messageText || '').toLowerCase();\nconst currentLang = $input.first().json.data[0].custom_preferred_language;\nconst leadId = $input.first().json.data[0].name;\n\nlet selectedLanguage = null;\n\n// Check if user selected language\nif (text === '1' || text === 'english' || text.includes('eng')) {\n  selectedLanguage = 'English';\n} else if (text === '2' || text === 'tamil' || text.includes('தமிழ்') || text.includes('tam')) {\n  selectedLanguage = 'Tamil';\n}\n\nreturn [{\n  json: {\n    leadId: leadId,\n    currentLang: currentLang,\n    selectedLanguage: selectedLanguage,\n    messageText: $('Filter & Sanitize Payload').item.json.messageText,\n    clean_phone: $('Filter & Sanitize Payload').item.json.clean_phone,\n    needsLanguageUpdate: (selectedLanguage !== null && selectedLanguage !== currentLang)\n  }\n}];"
+      },
+      "id": "code-check-language-reply",
+      "name": "Check Language Selection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs-update-check",
+              "leftValue": "={{ $json.needsLanguageUpdate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-language-selected",
+      "name": "Language Reply Detected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ ($env.ERPNEXT_URL || 'http://erpnext.local') + '/api/resource/Lead/' + $json.leadId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"custom_preferred_language\": \"{{ $json.selectedLanguage }}\"\n}",
+        "options": {}
+      },
+      "id": "http-update-lead-lang",
+      "name": "Save Language on Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        140
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Check Language Selection').item.json.clean_phone }}\",\n  \"text\": \"{{ $('Check Language Selection').item.json.selectedLanguage === 'Tamil' ? 'நன்றி! உங்கள் விருப்ப மொழி தமிழ் என பதிவு செய்யப்பட்டுள்ளது. எங்கள் ஆதரவு குழு உங்களுக்கு உதவ தயாராக உள்ளது. உங்கள் கேள்வியை பகிரவும்.' : 'Thank you! Your preferred language is set to English. Our support desk is ready to assist you. Please share your query.' }}\"\n}",
+        "options": {}
+      },
+      "id": "http-send-language-ack",
+      "name": "Send Language Confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        140
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Evolution API Webhook": {
+      "main": [
+        [
+          {
+            "node": "Filter & Sanitize Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Sanitize Payload": {
+      "main": [
+        [
+          {
+            "node": "Search Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Lead Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Exists?": {
+      "main": [
+        [
+          {
+            "node": "Check Language Selection",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create New Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create New Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Send Language Menu (Evolution)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Language Selection": {
+      "main": [
+        [
+          {
+            "node": "Language Reply Detected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Language Reply Detected?": {
+      "main": [
+        [
+          {
+            "node": "Save Language on Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Language on Lead": {
+      "main": [
+        [
+          {
+            "node": "Send Language Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

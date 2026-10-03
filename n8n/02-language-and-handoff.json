@@ -1,0 +1,209 @@
+{
+  "name": "02 - Meta Interactive Language & Proactive Wave Handoff",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meta-language-reply",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "meta-webhook-buttons",
+      "name": "Meta Button Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        340
+      ],
+      "webhookId": "meta-language-reply"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nif (!body.entry || !body.entry[0] || !body.entry[0].changes || !body.entry[0].changes[0]) {\n  return [];\n}\n\nconst value = body.entry[0].changes[0].value;\nif (!value.messages || !value.messages[0]) {\n  return [];\n}\n\nconst msg = value.messages[0];\nlet selectedLanguage = 'English';\nlet rawReply = '';\n\nif (msg.type === 'interactive' && msg.interactive.type === 'button_reply') {\n  rawReply = (msg.interactive.button_reply.id || msg.interactive.button_reply.title).toLowerCase();\n} else if (msg.type === 'text') {\n  rawReply = (msg.text.body || '').toLowerCase();\n}\n\nif (rawReply.includes('tamil') || rawReply.includes('தமிழ்') || rawReply === 'btn_tamil') {\n  selectedLanguage = 'Tamil';\n} else {\n  selectedLanguage = 'English';\n}\n\nreturn [{\n  json: {\n    phone: msg.from,\n    selectedLanguage: selectedLanguage,\n    messageId: msg.id\n  }\n}];"
+      },
+      "id": "code-parse-button",
+      "name": "Parse Selected Language",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "=[[\"mobile_no\",\"like\",\"%\" + $json.phone + \"%\"]]"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\",\"custom_preferred_language\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-find-lead",
+      "name": "Find Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ ($env.ERPNEXT_URL || 'http://erpnext.local') + '/api/resource/Lead/' + ($json.data && $json.data[0] ? $json.data[0].name : '') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"custom_preferred_language\": \"{{ $('Parse Selected Language').item.json.selectedLanguage }}\"\n}",
+        "options": {}
+      },
+      "id": "http-save-lang",
+      "name": "Save Language to Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v20.0/{{$env.META_PHONE_NUMBER_ID}}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{ $('Parse Selected Language').item.json.phone }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"preview_url\": false,\n    \"body\": \"Connecting you with our support desk in a new window. Please check your incoming messages.\"\n  }\n}",
+        "options": {}
+      },
+      "id": "http-meta-handoff-notice",
+      "name": "Number 01 Handoff Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "meta-token-auth",
+          "name": "Meta Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Parse Selected Language').item.json.phone }}\",\n  \"text\": \"{{ $('Parse Selected Language').item.json.selectedLanguage === 'Tamil' ? 'வணக்கம்! 🙏 எங்கள் வாடிக்கையாளர் சேவை மையத்திற்கு உங்களை வரவேற்கிறோம். உங்களுக்கு எவ்வாறு உதவ முடியும்?' : 'Hello! 👋 Welcome to our dedicated support desk. How can we assist you today?' }}\"\n}",
+        "options": {}
+      },
+      "id": "http-evo-proactive-wave",
+      "name": "Number 02 Proactive Wave (Evolution)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Meta Button Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Selected Language",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Selected Language": {
+      "main": [
+        [
+          {
+            "node": "Find Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Save Language to Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Language to Lead": {
+      "main": [
+        [
+          {
+            "node": "Number 01 Handoff Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Number 01 Handoff Message": {
+      "main": [
+        [
+          {
+            "node": "Number 02 Proactive Wave (Evolution)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
