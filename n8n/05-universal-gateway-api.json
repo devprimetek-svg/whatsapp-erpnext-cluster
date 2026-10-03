@@ -1,0 +1,329 @@
+{
+  "name": "05 - Universal WhatsApp Gateway API (For Web Apps & External Services)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "api/v1/send-message",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-universal-send",
+      "name": "Universal Outbound API Endpoint",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        340
+      ],
+      "webhookId": "api-v1-send-message"
+    },
+    {
+      "parameters": {
+        "jsCode": "const headers = $input.first().json.headers || {};\nconst body = $input.first().json.body || {};\n\nconst clientApiKey = headers['x-api-key'] || headers['X-API-KEY'] || headers['x-api-token'];\nconst validApiKey = $env.UNIVERSAL_GATEWAY_API_KEY || 'gateway_sec_change_me_in_env';\n\n// 1. Authenticate Request\nif (!clientApiKey || clientApiKey !== validApiKey) {\n  return [{\n    json: {\n      authenticated: false,\n      error: 'Unauthorized: Invalid or missing x-api-key header',\n      statusCode: 401\n    }\n  }];\n}\n\n// 2. Validate Required Fields\nconst rawPhone = body.to || body.phone || body.number;\nconst rawMessage = body.message || body.text;\n\nif (!rawPhone || !rawMessage) {\n  return [{\n    json: {\n      authenticated: false,\n      error: 'Bad Request: \"to\" and \"message\" fields are required',\n      statusCode: 400\n    }\n  }];\n}\n\n// 3. Sanitize Phone Number (Extract digits)\nconst cleanPhone = String(rawPhone).replace(/[^0-9]/g, '');\nconst targetLang = (body.target_language || body.language || 'original').toLowerCase();\nconst senderSource = body.source || 'custom_webapp';\nconst metadata = body.metadata || {};\n\nreturn [{\n  json: {\n    authenticated: true,\n    cleanPhone: cleanPhone,\n    originalMessage: String(rawMessage).trim(),\n    targetLang: targetLang,\n    senderSource: senderSource,\n    metadata: metadata,\n    statusCode: 200\n  }\n}];"
+      },
+      "id": "code-auth-validate",
+      "name": "Auth & Payload Validator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "auth-check",
+              "leftValue": "={{ $json.authenticated }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-authenticated",
+      "name": "Is Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"{{ $json.error }}\"\n}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "respond-auth-error",
+      "name": "Return Auth Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "tamil-translation-needed",
+              "leftValue": "={{ $json.targetLang }}",
+              "rightValue": "tamil",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "ta-code-check",
+              "leftValue": "={{ $json.targetLang }}",
+              "rightValue": "ta",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "if-translate-tamil",
+      "name": "Translate to Tamil?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://translation.googleapis.com/language/translate/v2",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.GCP_TRANSLATION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"q\": \"{{ $('Auth & Payload Validator').item.json.originalMessage }}\",\n  \"source\": \"en\",\n  \"target\": \"ta\",\n  \"format\": \"text\"\n}",
+        "options": {}
+      },
+      "id": "http-translate-tamil-webapp",
+      "name": "Translate to Tamil (GCP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        140
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const original = $('Auth & Payload Validator').item.json.originalMessage;\nlet textToSend = original;\n\nif ($input.first().json && $input.first().json.data && $input.first().json.data.translations) {\n  textToSend = $input.first().json.data.translations[0].translatedText;\n}\n\nreturn [{\n  json: {\n    cleanPhone: $('Auth & Payload Validator').item.json.cleanPhone,\n    textToSend: textToSend,\n    originalMessage: original,\n    translated: (textToSend !== original),\n    sourceLanguage: 'en',\n    dispatchedLanguage: 'ta'\n  }\n}];"
+      },
+      "id": "code-prep-tamil-outbound",
+      "name": "Prepare Tamil Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const original = $('Auth & Payload Validator').item.json.originalMessage;\nreturn [{\n  json: {\n    cleanPhone: $('Auth & Payload Validator').item.json.cleanPhone,\n    textToSend: original,\n    originalMessage: original,\n    translated: false,\n    sourceLanguage: 'original',\n    dispatchedLanguage: 'original'\n  }\n}];"
+      },
+      "id": "code-prep-original-outbound",
+      "name": "Prepare Direct Dispatch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.cleanPhone }}\",\n  \"text\": \"{{ $json.textToSend }}\"\n}",
+        "options": {}
+      },
+      "id": "http-dispatch-to-whatsapp",
+      "name": "Send WhatsApp via Evolution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1660,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"status\": \"dispatched\",\n  \"recipient\": \"{{ $('Auth & Payload Validator').item.json.cleanPhone }}\",\n  \"dispatched_text\": \"{{ $json.key ? $('http-dispatch-to-whatsapp').item.json.data?.message?.conversation || 'Message queued' : 'Delivered' }}\",\n  \"translated\": {{ $('Prepare Tamil Dispatch').isExecuted }},\n  \"instance\": \"{{ $env.GLOBAL_OPERATIONAL_WA_NO || 'support_primary' }}\",\n  \"timestamp\": {{ Math.floor(Date.now() / 1000) }}\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success-webapp",
+      "name": "Return Success to Web App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1900,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Universal Outbound API Endpoint": {
+      "main": [
+        [
+          {
+            "node": "Auth & Payload Validator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth & Payload Validator": {
+      "main": [
+        [
+          {
+            "node": "Is Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Translate to Tamil?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Auth Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Translate to Tamil?": {
+      "main": [
+        [
+          {
+            "node": "Translate to Tamil (GCP)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Direct Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Translate to Tamil (GCP)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Tamil Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Tamil Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp via Evolution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Direct Dispatch": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp via Evolution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp via Evolution": {
+      "main": [
+        [
+          {
+            "node": "Return Success to Web App",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

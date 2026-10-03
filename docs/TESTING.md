@@ -440,3 +440,103 @@ curl -s -X POST "$N8N_OUTBOUND" \
    - Notice the Evolution API request URL automatically dynamically resolved to:
      `https://wa-gateway.yourdomain.com/message/sendText/support_secondary`
    - Zero workflows modified; failover completed instantly.
+
+---
+
+## Milestone 5: Universal Web App Gateway API Verification
+
+These tests verify that any custom web app (Next.js, React, Node.js, Python, etc.) can send WhatsApp messages and trigger automated translation via the Universal Gateway API.
+
+### 1. Pre-requisites
+Ensure workflow `05 - Universal WhatsApp Gateway API` is imported and **Active** in n8n.
+
+Export the test variables:
+```bash
+export UNIVERSAL_API="https://n8n.yourdomain.com/webhook/api/v1/send-message"
+export GATEWAY_KEY="your_configured_universal_gateway_api_key"
+```
+
+---
+
+### 2. Universal API Verification Tests
+
+#### Test 5.1: Verify API Key Security (Unauthorized Request)
+Attempt to send a message without the `x-api-key` header:
+
+```bash
+curl -s -i -X POST "$UNIVERSAL_API" \
+  -H "Content-Type: application/json" \
+  -d '{"to": "919876543210", "message": "Unauthorized test"}'
+```
+
+**Expected Response**:
+```http
+HTTP/2 401 Unauthorized
+```
+```json
+{
+  "success": false,
+  "error": "Unauthorized: Invalid or missing x-api-key header"
+}
+```
+
+---
+
+#### Test 5.2: Send Direct Message from Web App (English)
+Send an authenticated message from your custom application:
+
+```bash
+curl -s -X POST "$UNIVERSAL_API" \
+  -H "x-api-key: $GATEWAY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "919876543210",
+    "message": "Your verification code is 492019. Valid for 10 minutes.",
+    "source": "auth_service"
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "status": "dispatched",
+  "recipient": "919876543210",
+  "dispatched_text": "Delivered",
+  "translated": false,
+  "instance": "support_primary",
+  "timestamp": 1727941200
+}
+```
+
+---
+
+#### Test 5.3: Send Message with Automatic Tamil Translation
+Send an English message with `target_language: "tamil"`:
+
+```bash
+curl -s -X POST "$UNIVERSAL_API" \
+  -H "x-api-key: $GATEWAY_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "919876543210",
+    "message": "Hello! Your payment has been received successfully. Thank you for your business.",
+    "target_language": "tamil",
+    "source": "checkout_app"
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "status": "dispatched",
+  "recipient": "919876543210",
+  "dispatched_text": "Delivered",
+  "translated": true,
+  "instance": "support_primary",
+  "timestamp": 1727941230
+}
+```
+*Customer receives Tamil translation on WhatsApp*:
+> "வணக்கம்! உங்கள் கட்டணம் வெற்றிகரமாக பெறப்பட்டது. எங்களுடன் இணைந்தமைக்கு நன்றி."

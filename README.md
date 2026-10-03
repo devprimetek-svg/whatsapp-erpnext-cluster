@@ -8,6 +8,7 @@ Production deployment guide and architecture for the decoupled, multi-language W
 
 - **Entry Point (Number 01)**: Official Meta WhatsApp Cloud API. Receives the initial customer touchpoint, handles language selection buttons, and triggers routing.
 - **Conversational Engine (Number 02 / Number 03)**: Swappable instances hosted on Evolution API v2. Zero message cost for conversational volume.
+- **Universal Web App Gateway API**: Open REST API endpoint for any external application (Next.js, React, Node.js, Python, Flutter) to dispatch WhatsApp messages with optional auto-translation and receive incoming customer chats.
 - **Evolution Manager UI**: Web dashboard for non-technical managers to create instances and link WhatsApp via QR code.
 - **n8n Orchestrator**: Handles Meta webhooks, ERPNext Lead queries, translation calls, and handoff commands.
 - **Reverse Proxy**: Caddy v2 providing automatic Let's Encrypt SSL/TLS certificates on ports 80 and 443. All internal services communicate securely across Docker's private bridge network (`cluster_net`).
