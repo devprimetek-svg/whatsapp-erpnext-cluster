@@ -1,0 +1,89 @@
+{
+  "name": "PRIMETEK - 03 Inbound Customer Support Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "primetek/inbound-chat",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "webhook-primetek-inbound",
+      "name": "PRIMETEK WhatsApp Inbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        340
+      ],
+      "webhookId": "primetek-inbound-chat"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json;\nconst data = payload.data || payload;\n\nif (!data || !data.key) {\n  return [];\n}\n\n// 1. Filter out bot messages\nif (data.key.fromMe === true) {\n  return [];\n}\n\n// 2. Filter out groups\nconst remoteJid = data.key.remoteJid || '';\nif (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast')) {\n  return [];\n}\n\n// 3. Extract phone and text\nconst cleanPhone = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');\nconst msgObj = data.message || {};\nlet text = '';\nif (msgObj.conversation) text = msgObj.conversation;\nelse if (msgObj.extendedTextMessage && msgObj.extendedTextMessage.text) text = msgObj.extendedTextMessage.text;\n\ntext = (text || '').trim();\nif (!text) return [];\n\nconst customerName = data.pushName || 'PRIMETEK Store Visitor';\n\nreturn [{\n  json: {\n    customerPhone: cleanPhone,\n    customerName: customerName,\n    customerMessage: text,\n    timestamp: data.messageTimestamp || Math.floor(Date.now() / 1000),\n    storeInstance: payload.instance || 'primetek_store'\n  }\n}];"
+      },
+      "id": "code-primetek-filter",
+      "name": "Filter & Sanitize Customer Chat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.WA_INSTANCE_PRIMETEK || 'primetek_store') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.customerPhone }}\",\n  \"text\": \"Hello {{ $json.customerName }}! 👋\\n\\nWelcome to *PRIMETEK Support* (www.primetek.online).\\n\\nWe have received your message:\\n\\\"{{ $json.customerMessage }}\\\"\\n\\nAn engineer or support executive will attend to your query shortly. If you are inquiring about ready-made software or an existing order, please feel free to drop your Order ID.\"\n}",
+        "options": {}
+      },
+      "id": "http-primetek-auto-reply",
+      "name": "PRIMETEK Store Auto-Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "PRIMETEK WhatsApp Inbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "Filter & Sanitize Customer Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Sanitize Customer Chat": {
+      "main": [
+        [
+          {
+            "node": "PRIMETEK Store Auto-Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

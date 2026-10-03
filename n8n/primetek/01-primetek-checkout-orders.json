@@ -1,0 +1,183 @@
+{
+  "name": "PRIMETEK - 01 Checkout Order Receipt Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "primetek/v1/checkout-order",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "primetek-checkout-webhook",
+      "name": "PRIMETEK Checkout Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        340
+      ],
+      "webhookId": "primetek-v1-checkout-order"
+    },
+    {
+      "parameters": {
+        "jsCode": "const headers = $input.first().json.headers || {};\nconst body = $input.first().json.body || {};\n\nconst clientKey = headers['x-primetek-key'] || headers['x-api-key'] || headers['authorization'];\nconst expectedKey = $env.PRIMETEK_GATEWAY_API_KEY || 'primetek_sec_change_in_env';\n\n// 1. Authenticate Request\nif (!clientKey || clientKey !== expectedKey) {\n  return [{\n    json: {\n      authenticated: false,\n      error: 'Unauthorized: Invalid or missing x-primetek-key header',\n      statusCode: 401\n    }\n  }];\n}\n\n// 2. Validate Required Order Data\nconst phone = body.phone || body.to;\nconst name = body.name || 'Valued Customer';\nconst summary = body.summary || 'Custom Software Package';\nconst total = body.total || 0;\n\nif (!phone) {\n  return [{\n    json: {\n      authenticated: false,\n      error: 'Bad Request: Customer phone number is required',\n      statusCode: 400\n    }\n  }];\n}\n\nconst cleanPhone = String(phone).replace(/[^0-9]/g, '');\n\n// 3. Format Brand Message for PRIMETEK Customers\nconst messageText =\n  `Hi ${name}! 👋\\n\\n` +\n  `Thank you for ordering with *PRIMETEK*! 🚀\\n\\n` +\n  `📦 *Order Details:*\\n${summary}\\n\\n` +\n  `💰 *Total Amount:* ₹${total.toLocaleString('en-IN')}\\n\\n` +\n  `Our engineering team has received your order and is reviewing your specifications. We will share the UPI payment & delivery instructions shortly.\\n\\n` +\n  `_Need immediate assistance? Simply reply to this WhatsApp message anytime!_`;\n\nreturn [{\n  json: {\n    authenticated: true,\n    cleanPhone: cleanPhone,\n    customerName: name,\n    messageText: messageText,\n    email: body.email || '',\n    company: body.company || '',\n    notes: body.notes || '',\n    total: total,\n    items: body.items || [],\n    instance: $env.WA_INSTANCE_PRIMETEK || 'primetek_store',\n    statusCode: 200\n  }\n}];"
+      },
+      "id": "code-primetek-validate",
+      "name": "Validate PRIMETEK Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "primetek-auth-check",
+              "leftValue": "={{ $json.authenticated }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-primetek-auth",
+      "name": "Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"{{ $json.error }}\"\n}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "respond-primetek-auth-error",
+      "name": "Return Auth Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        920,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.WA_INSTANCE_PRIMETEK || 'primetek_store') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.cleanPhone }}\",\n  \"text\": \"{{ $json.messageText }}\"\n}",
+        "options": {}
+      },
+      "id": "http-primetek-send-wa",
+      "name": "Send WhatsApp via PRIMETEK Number",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"status\": \"dispatched\",\n  \"service\": \"PRIMETEK Storefront\",\n  \"recipient\": \"{{ $('Validate PRIMETEK Order').item.json.cleanPhone }}\",\n  \"customer\": \"{{ $('Validate PRIMETEK Order').item.json.customerName }}\",\n  \"instance\": \"{{ $env.WA_INSTANCE_PRIMETEK || 'primetek_store' }}\",\n  \"timestamp\": {{ Math.floor(Date.now() / 1000) }}\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-primetek-success",
+      "name": "Return Success to Storefront",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1220,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "PRIMETEK Checkout Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate PRIMETEK Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate PRIMETEK Order": {
+      "main": [
+        [
+          {
+            "node": "Authorized?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized?": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp via PRIMETEK Number",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Auth Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp via PRIMETEK Number": {
+      "main": [
+        [
+          {
+            "node": "Return Success to Storefront",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

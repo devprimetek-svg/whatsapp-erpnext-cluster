@@ -1,0 +1,216 @@
+{
+  "name": "ERPNEXT - 01 Inbound WhatsApp Lead Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "erpnext/inbound-lead",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "webhook-evolution-erpnext",
+      "name": "Evolution API Webhook (ERPNext Instance)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        340
+      ],
+      "webhookId": "erpnext-inbound-lead"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json;\nconst data = payload.data || payload;\n\nif (!data || !data.key) {\n  return [];\n}\n\n// 1. Discard bot messages\nif (data.key.fromMe === true) {\n  return [];\n}\n\n// 2. Discard WhatsApp groups\nconst remoteJid = data.key.remoteJid || '';\nif (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast')) {\n  return [];\n}\n\n// 3. Extract clean phone\nconst cleanPhone = remoteJid.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');\nif (!cleanPhone) {\n  return [];\n}\n\nconst messageObj = data.message || {};\nlet messageText = '';\nif (messageObj.conversation) {\n  messageText = messageObj.conversation;\n} else if (messageObj.extendedTextMessage && messageObj.extendedTextMessage.text) {\n  messageText = messageObj.extendedTextMessage.text;\n}\n\nmessageText = (messageText || '').trim();\nconst pushName = data.pushName || 'WhatsApp Customer';\nconst instance = payload.instance || $env.WA_INSTANCE_ERPNEXT || 'erpnext_support';\n\nreturn [{\n  json: {\n    clean_phone: cleanPhone,\n    remoteJid: remoteJid,\n    pushName: pushName,\n    messageText: messageText,\n    instance: instance,\n    timestamp: data.messageTimestamp || Math.floor(Date.now() / 1000)\n  }\n}];"
+      },
+      "id": "code-sanitize-erpnext",
+      "name": "Sanitize Customer Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filters",
+              "value": "=[[\"mobile_no\",\"like\",\"%\" + $json.clean_phone + \"%\"]]"
+            },
+            {
+              "name": "fields",
+              "value": "[\"name\",\"lead_name\",\"mobile_no\",\"custom_preferred_language\"]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-search-erp-lead",
+      "name": "Search Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "lead-exists-check",
+              "leftValue": "={{ $json.data && $json.data.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-lead-exists-erp",
+      "name": "Lead Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        940,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ERPNEXT_URL || 'http://erpnext.local'}}/api/resource/Lead",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_name\": \"{{ $('Sanitize Customer Payload').item.json.pushName }}\",\n  \"mobile_no\": \"{{ $('Sanitize Customer Payload').item.json.clean_phone }}\",\n  \"source\": \"WhatsApp CRM\",\n  \"custom_preferred_language\": \"Not Set\"\n}",
+        "options": {}
+      },
+      "id": "http-create-erp-lead",
+      "name": "Create Lead in ERPNext",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.WA_INSTANCE_ERPNEXT || 'erpnext_support') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $('Sanitize Customer Payload').item.json.clean_phone }}\",\n  \"text\": \"Welcome to Support! 👋\\nPlease select your preferred language:\\n\\n1️⃣ Reply *1* for English\\n2️⃣ தமிழ் மொழிக்கு *2* என பதிலளிக்கவும்\"\n}",
+        "options": {}
+      },
+      "id": "http-erp-lang-prompt",
+      "name": "Send Language Menu (ERPNext Number)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Evolution API Webhook (ERPNext Instance)": {
+      "main": [
+        [
+          {
+            "node": "Sanitize Customer Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Customer Payload": {
+      "main": [
+        [
+          {
+            "node": "Search Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Lead Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Exists?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Create Lead in ERPNext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Lead in ERPNext": {
+      "main": [
+        [
+          {
+            "node": "Send Language Menu (ERPNext Number)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

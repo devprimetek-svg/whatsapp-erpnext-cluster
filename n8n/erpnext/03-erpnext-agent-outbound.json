@@ -1,0 +1,259 @@
+{
+  "name": "ERPNEXT - 03 Outbound Agent Chat Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "erpnext/outbound-reply",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "id": "erpnext-outbound-webhook",
+      "name": "ERPNext Outbound Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        340
+      ],
+      "webhookId": "erpnext-outbound-reply"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nif (body.reference_doctype !== 'Lead') {\n  return [];\n}\n\nif (body.sent_or_received !== 'Sent') {\n  return [];\n}\n\nlet content = body.content || '';\ncontent = content.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').trim();\n\nif (!content) return [];\n\nreturn [{\n  json: {\n    leadId: body.reference_name,\n    agentMessage: content,\n    communicationId: body.name || body.id\n  }\n}];"
+      },
+      "id": "code-erp-filter-agent",
+      "name": "Sanitize Agent Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.ERPNEXT_URL || 'http://erpnext.local') + '/api/resource/Lead/' + $json.leadId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "http-erp-get-lead-lang",
+      "name": "Fetch Lead Language Preference",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "erpnext-header-auth",
+          "name": "ERPNext API Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-tamil-lead",
+              "leftValue": "={{ $json.data.custom_preferred_language }}",
+              "rightValue": "Tamil",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-erp-lead-tamil",
+      "name": "Is Preferred Lang Tamil?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        920,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://translation.googleapis.com/language/translate/v2",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.GCP_TRANSLATION_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"q\": \"{{ $('Sanitize Agent Message').item.json.agentMessage }}\",\n  \"source\": \"en\",\n  \"target\": \"ta\",\n  \"format\": \"text\"\n}",
+        "options": {}
+      },
+      "id": "http-erp-translate-ta",
+      "name": "Translate English to Tamil (GCP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1160,
+        240
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const agentMessage = $('Sanitize Agent Message').item.json.agentMessage;\nlet finalMessage = agentMessage;\n\nif ($input.first().json && $input.first().json.data && $input.first().json.data.translations) {\n  finalMessage = $input.first().json.data.translations[0].translatedText;\n}\n\nreturn [{\n  json: {\n    targetPhone: $('Fetch Lead Language Preference').item.json.data.mobile_no,\n    textToSend: finalMessage\n  }\n}];"
+      },
+      "id": "code-erp-prep-tamil",
+      "name": "Prepare Tamil Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    targetPhone: $('Fetch Lead Language Preference').item.json.data.mobile_no,\n    textToSend: $('Sanitize Agent Message').item.json.agentMessage\n  }\n}];"
+      },
+      "id": "code-erp-prep-eng",
+      "name": "Prepare English Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.EVOLUTION_INTERNAL_URL || 'http://evolution_api:8080') + '/message/sendText/' + ($env.WA_INSTANCE_ERPNEXT || 'erpnext_support') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.targetPhone }}\",\n  \"text\": \"{{ $json.textToSend }}\"\n}",
+        "options": {}
+      },
+      "id": "http-erp-send-wa",
+      "name": "Send WhatsApp via ERPNext Number",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1660,
+        340
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "evolution-header-auth",
+          "name": "Evolution API Key Header"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "ERPNext Outbound Webhook": {
+      "main": [
+        [
+          {
+            "node": "Sanitize Agent Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Agent Message": {
+      "main": [
+        [
+          {
+            "node": "Fetch Lead Language Preference",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Lead Language Preference": {
+      "main": [
+        [
+          {
+            "node": "Is Preferred Lang Tamil?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Preferred Lang Tamil?": {
+      "main": [
+        [
+          {
+            "node": "Translate English to Tamil (GCP)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare English Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Translate English to Tamil (GCP)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Tamil Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Tamil Text": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp via ERPNext Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare English Text": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp via ERPNext Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
